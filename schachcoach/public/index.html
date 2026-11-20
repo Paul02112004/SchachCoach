@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1a1a1a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>SchachCoach</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/vendor/chessground.base.css">
+  <link rel="stylesheet" href="/vendor/chessground.brown.css">
+  <link rel="stylesheet" href="/vendor/chessground.cburnett.css">
+  <link rel="stylesheet" href="/css/app.css">
+  <script type="importmap">{ "imports": { "chess.js": "/vendor/chess.js", "chessground": "/vendor/chessground.js" } }</script>
+</head>
+<body>
+  <nav id="nav">
+    <div class="logo">♞</div>
+    <a href="#/coach" data-route="coach"><span>🧠</span>Coach</a>
+    <a href="#/import" data-route="import"><span>⬇️</span>Laden</a>
+    <a href="#/games" data-route="games"><span>📚</span>Partien</a>
+    <a href="#/train" data-route="train"><span>🎯</span>Training</a>
+    <a href="#/openings" data-route="openings"><span>📖</span>Eröffnung</a>
+    <a href="#/settings" data-route="settings"><span>⚙️</span>Optionen</a>
+    <div id="queue"></div>
+  </nav>
+  <main id="view"></main>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
