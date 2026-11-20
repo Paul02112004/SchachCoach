@@ -19,7 +19,7 @@ export const store = {
   setKv: (k, v) => put('/api/kv/' + k, v),
 };
 
-export const DEFAULT_SETTINGS = { chesscom: '', lichess: '', depth: 14, historyDepth: 12, workers: 0, batchSize: 25, autoSync: true, syncMinutes: 10, fullHistory: false };
+export const DEFAULT_SETTINGS = { chesscom: '', lichess: '', depth: 14, historyDepth: 12, lineDepth: 16, workers: 0, batchSize: 25, autoSync: true, syncMinutes: 10, fullHistory: false };
 let settingsCache = null;
 export async function getSettings() {
   if (!settingsCache) settingsCache = { ...DEFAULT_SETTINGS, ...(await store.getKv('settings') || {}) };

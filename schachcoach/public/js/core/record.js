@@ -42,7 +42,7 @@ function buildPuzzles(game) {
     if (!ev.best) return;
     const pick = e => e.mate != null ? { mate: e.mate } : { cp: e.cp };
     out.push({
-      id: `${game.id}-${i}`, gameId: game.id, ply: i, fen: m.fenBefore, played: m.uci, playedSan: m.san, best: ev.best, pv: (ev.pv || []).slice(0, 6),
+      id: `${game.id}-${i}`, gameId: game.id, ply: i, fen: m.fenBefore, played: m.uci, playedSan: m.san, best: ev.best, pv: (ev.pv || []).slice(0, 12),
       ev: pick(ev), second: ev.second, cls: m.cls, phase: m.phase, loss: m.loss, date: game.date, timeClass: game.timeClass,
       tactical: m.tactical, wpBefore: Math.round(m.wpBefore),
     });

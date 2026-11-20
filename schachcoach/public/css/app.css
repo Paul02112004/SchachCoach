@@ -68,7 +68,15 @@ table.list tr.click { cursor: pointer; } table.list tr.click:hover td { backgrou
 .evalbar .white { position: absolute; left: 0; right: 0; bottom: 0; background: #f1f1f1; transition: height .4s; }
 .evalbar .num { position: absolute; left: 0; right: 0; font-size: 10.5px; font-weight: 700; text-align: center; z-index: 1; }
 .evalbar.flipped .white { bottom: auto; top: 0; }
+.evalbar.neutral { background: #4a4a4a; }
+.evalbar.neutral .white { background: #5a5a5a; }
+.evalinfo { font-size: 13px; color: var(--muted); min-height: 18px; margin-top: 6px; }
+.evalinfo b { color: var(--text); }
 cg-board square.last-move { background-color: rgba(255, 210, 60, 0.38); }
+cg-board square.mark-red { background-color: rgba(235, 64, 52, 0.62); }
+.btn.loading { position: relative; color: transparent !important; pointer-events: none; }
+.btn.loading::after { content: ''; position: absolute; inset: 0; margin: auto; width: 16px; height: 16px; border: 2px solid #777; border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 cg-container svg.cg-custom-svgs { overflow: visible; }
 .player { display: flex; align-items: center; gap: 8px; padding: 6px 2px; font-weight: 600; }
 .player .clr { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #777; }
@@ -149,6 +157,7 @@ cg-container svg.cg-custom-svgs { overflow: visible; }
   .how { grid-template-columns: 1fr 1fr; } .how > :first-child { grid-column: 1 / -1; justify-self: center; }
   .grid2 { grid-template-columns: 1fr; }
   .board { width: min(560px, calc(100vw - 170px)); }
+  .boardwrap .board { width: min(560px, calc(100vw - 200px)); } /* Platz für den Bewertungsbalken */
 }
 @media (max-width: 640px) {
   body { flex-direction: column-reverse; }
@@ -157,6 +166,8 @@ cg-container svg.cg-custom-svgs { overflow: visible; }
   #nav a { width: auto; flex: 1; font-size: 10.5px; } #nav a span { font-size: 20px; }
   #view { padding: 14px 12px 30px; }
   .board { width: calc(100vw - 58px); }
+  .boardwrap { gap: 6px; } .evalbar { width: 18px; } .evalbar .num { font-size: 8.5px; }
+  .boardwrap .board { width: calc(100vw - 66px); } /* + Balken, Abstand und Platz für die Koordinaten-Buchstaben rechts */
   .how { grid-template-columns: 1fr; }
   .elo-col .tube { width: 40px; height: 180px; }
 }

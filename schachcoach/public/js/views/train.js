@@ -1,9 +1,10 @@
 // Training: Aufgaben aus deinen eigenen Fehlern (Leitner-Wiederholung)
-import { h, toast, classBadge, navBar, bindNavKeys, moveLine, moveNo } from '../ui.js';
+import { h, toast, classBadge, navBar, bindNavKeys, moveLine, moveNo, evalBar } from '../ui.js';
 import { createBoard, arrow, uciToSan, lineFrom } from '../board.js';
 import { store } from '../core/store.js';
 import { engine } from '../core/engine.js';
-import { CLASSES, wpFor } from '../core/analysis.js';
+import { CLASSES, wpFor, formatEval } from '../core/analysis.js';
+import { lineExtender, canExtend } from '../extend.js';
 import { PATTERNS, PATTERN_VERSION } from '../core/patterns.js';
 import { ensurePatterns } from '../core/pipeline.js';
 
@@ -46,8 +47,34 @@ export async function render(root, [filterKey = 'all']) {
   let myColor = 'white', seq = 0;
   // Stellungen: pos[0] = Partieanfang, pos[i] = nach dem i-ten Zug { fen, san, lastMove, fenBefore, uci }.
   // pos[base] = Aufgabenstellung; nach dem Lösen hängt dahinter die Lösungslinie (engineTail = Engine-Linie).
-  let pos = [], base = 0, cur = 0, engineTail = false;
-  const board = createBoard(boardEl, { onMove: (uci, chess) => onUserMove(uci, chess) });
+  // Nach dem Lösen sind eigene Züge erlaubt: explore = { from } → pos[from+1…] ist eine eigene Variante,
+  // solutionPos hält solange die Lösungslinie (ohne Variante ist solutionPos === pos).
+  let pos = [], base = 0, cur = 0, engineTail = false, solutionPos = null, explore = null;
+  const board = createBoard(boardEl, { onMove: (uci, chess, mv) => onUserMove(uci, chess, mv) });
+
+  // Bewertungsbalken + Text unter dem Brett – erst nach dem Lösen, damit nichts verraten wird
+  const bar = evalBar();
+  const evalInfo = h('div.evalinfo');
+  let stopLive = null;
+  const stopAnalysis = () => { stopLive?.(); stopLive = null; };
+  const inExplore = () => !!explore && cur > explore.from;
+
+  // Am Ende der Linie rechnet die Engine auf Wunsch weiter (▶ / → bzw. „+5 Züge“)
+  const plus5Btn = h('button.btn.small', { onclick: () => extend5(), title: 'Die Engine rechnet 5 weitere Halbzüge (abbrechbar durch Navigieren)' }, '+5 Züge');
+  const ext = lineExtender({
+    onStep: step => { pos.push(step); cur = pos.length - 1; render(); },
+    onBusy: b => { nav.busy('next', b); plus5Btn.disabled = b || !pos.length || !canExtend(pos[pos.length - 1].fen); },
+    onDone: () => render(),
+  });
+  const canGrow = () => solved && !showPlayed && cur === pos.length - 1 && canExtend(pos[cur].fen);
+  function extend5() {
+    if (!puzzle || !solved || ext.busy) return;
+    clearTimers();
+    showPlayed = false;
+    cur = pos.length - 1;
+    ext.run(pos[cur].fen, 5);
+    render();
+  }
 
   // laufende Timeouts (Rücksetzen nach Fehlversuch) – werden beim Navigieren abgebrochen
   const timers = new Set();
@@ -63,12 +90,18 @@ export async function render(root, [filterKey = 'all']) {
 
   function goTo(i) {
     if (!puzzle || !pos.length) return;
+    ext.cancel();
     clearTimers();
     showPlayed = false;
     cur = Math.max(0, Math.min(pos.length - 1, i));
     render();
   }
-  const navActs = { first: () => goTo(0), prev: () => goTo(cur - 1), next: () => goTo(cur + 1), last: () => goTo(pos.length - 1) };
+  function next() {
+    if (!puzzle || ext.busy) return; // rechnet schon – kein zweiter Auftrag
+    if (showPlayed || cur < pos.length - 1) return goTo(cur + 1);
+    if (canGrow()) { ext.run(pos[cur].fen, 1); render(); } // Ende der Linie: Engine rechnet den nächsten Zug
+  }
+  const navActs = { first: () => goTo(0), prev: () => goTo(cur - 1), next, last: () => goTo(pos.length - 1) };
   const nav = navBar({ ...navActs, firstTitle: 'Partieanfang (Pos1)', lastTitle: 'Zur Aufgabe bzw. ans Ende der Lösung (Ende)' });
   const unbindKeys = bindNavKeys(navActs);
 
@@ -102,13 +135,17 @@ export async function render(root, [filterKey = 'all']) {
   async function load() {
     const my = ++seq;
     clearTimers();
+    ext.cancel();
+    stopAnalysis();
     drawChips();
     const next = nextPuzzle();
     let game = null;
     if (next) { try { game = await getGame(next.gameId); } catch { /* ohne Partie: nur Aufgabenstellung */ } }
     if (my !== seq) return;
     puzzle = next; fails = 0; solved = false; checking = false; hinted = false; showPlayed = false; engineTail = false;
+    solutionPos = null; explore = null;
     solBox.replaceChildren();
+    bar.neutral(); evalInfo.replaceChildren();
     if (!puzzle) {
       pos = []; cur = base = 0;
       board.show('8/8/8/8/8/8/8/8 w - - 0 1');
@@ -122,6 +159,7 @@ export async function render(root, [filterKey = 'all']) {
     base = cur = pos.length - 1;
     myColor = puzzle.fen.split(' ')[1] === 'w' ? 'white' : 'black';
     board.orientation(myColor);
+    bar.orient(myColor);
     prompt.className = 'feedback';
     prompt.replaceChildren(`${myColor === 'white' ? '⚪ Weiß' : '⚫ Schwarz'} am Zug – finde den besten Zug!`);
     const c = CLASSES[puzzle.cls];
@@ -137,27 +175,47 @@ export async function render(root, [filterKey = 'all']) {
 
   function render() {
     if (!puzzle) return;
+    stopAnalysis();
     const p = pos[cur];
-    const atTask = cur === base;
+    const atTask = cur === base && !inExplore();
+    let fen, shapes;
     if (showPlayed) {
       const m = lineFrom(puzzle.fen, [puzzle.played])[0];
-      board.show(m?.fen || puzzle.fen, { lastMove: m?.lastMove, shapes: [arrow(puzzle.played, 'red')] });
+      fen = m?.fen || puzzle.fen;
+      shapes = [arrow(puzzle.played, 'red')];
+      board.show(fen, { lastMove: m?.lastMove, shapes });
     } else {
-      const shapes = [];
+      fen = p.fen;
+      shapes = [];
       if (atTask && !solved && hinted) shapes.push({ orig: puzzle.best.slice(0, 2), brush: 'paleBlue' });
-      if (atTask && solved && pos[base + 1]) shapes.push(arrow(pos[base + 1].uci));
-      board.show(p.fen, { lastMove: p.lastMove, movable: atTask && !solved && !checking ? myColor : false, shapes });
+      if (atTask && solved && pos[base + 1] && !(explore && explore.from <= base)) shapes.push(arrow(pos[base + 1].uci));
+      // nach dem Lösen ist jede Stellung frei bespielbar (beide Farben)
+      const movable = solved ? 'both' : atTask && !checking ? myColor : false;
+      board.show(fen, { lastMove: p.lastMove, movable, shapes });
     }
     renderNav();
-    if (solved) renderSolution();
+    if (solved) { renderSolution(); liveEval(fen, shapes); }
+  }
+
+  /** Live-Bewertung der angezeigten Stellung (nur nach dem Lösen); ohne feste Pfeile zeigt ein Pfeil den besten Zug */
+  function liveEval(fen, shapes) {
+    if (ext.busy) { evalInfo.replaceChildren(h('span', 'Engine rechnet den nächsten Zug …')); return; }
+    evalInfo.replaceChildren(h('span', 'Engine rechnet …'));
+    const withArrow = !shapes.length;
+    stopLive = engine.liveAnalyse(fen, r => {
+      bar.set(r);
+      const txt = r.mate === 0 ? 'Matt' : r.depth === 0 && !r.best ? 'Remis' : null;
+      evalInfo.replaceChildren(txt ? h('b', txt) : h('span', h('b', formatEval(r)), ` · Tiefe ${r.depth}`));
+      if (withArrow) board.shapes([arrow(r.best)].filter(Boolean));
+    }, 18);
   }
 
   function renderNav() {
     const end = pos.length - 1;
-    nav.set({ first: cur > 0, prev: cur > 0, next: cur < end, last: cur < end });
+    nav.set({ first: cur > 0, prev: cur > 0, next: cur < end || showPlayed || canGrow(), last: cur < end });
     if (!puzzle) { posInfo.replaceChildren(); backHint.hidden = true; return; }
     const p = showPlayed ? { san: puzzle.playedSan, fenBefore: puzzle.fen } : pos[cur];
-    const where = showPlayed ? 'dein Partiezug' : cur === base ? 'Aufgabenstellung' : cur > base ? 'Lösungslinie' : 'Partieverlauf';
+    const where = showPlayed ? 'dein Partiezug' : inExplore() ? 'eigene Variante' : cur === base ? 'Aufgabenstellung' : cur > base ? 'Lösungslinie' : 'Partieverlauf';
     posInfo.replaceChildren(p.san ? h('b', 'Zug ' + moveNo(p.fenBefore) + ' ' + p.san) : h('b', cur === base ? 'Aufgabe' : 'Startstellung'),
       pos[end].fenBefore ? ' von ' + moveNo(pos[end].fenBefore) : '', ' · ' + where);
     backHint.hidden = solved || cur >= base;
@@ -165,17 +223,43 @@ export async function render(root, [filterKey = 'all']) {
 
   /** Lösungslinie (Züge nach der Aufgabenstellung) setzen */
   function setLine(ucis, isEngine) {
-    pos = pos.slice(0, base + 1).concat(lineFrom(puzzle.fen, ucis));
+    const src = explore ? solutionPos : pos; // eine eigene Variante kann den Partieverlauf schon verändert haben
+    pos = solutionPos = src.slice(0, base + 1).concat(lineFrom(puzzle.fen, ucis));
+    explore = null;
     engineTail = isEngine;
   }
   const engineUcis = () => puzzle.pv?.[0] === puzzle.best ? puzzle.pv : [puzzle.best];
 
+  /** Eigene Variante verwerfen, Lösungslinie wiederherstellen */
+  function restoreSolution() { if (explore) { pos = solutionPos; explore = null; } }
+  function backToSolution() {
+    if (!explore) return;
+    const from = explore.from;
+    ext.cancel();
+    restoreSolution();
+    goTo(from > base ? from : base + 1);
+  }
+
   function renderSolution() {
-    const tailIdx = cur > base && !showPlayed ? cur - base - 1 : -1;
+    const sol = explore ? solutionPos : pos;
+    const onSol = !showPlayed && !inExplore() && cur > base;
+    const tailIdx = onSol ? cur - base - 1 : -1;
+    const pickSol = i => { restoreSolution(); goTo(base + 1 + i); };
     const kids = [];
-    if (!engineTail && pos[base + 1]) kids.push(h('div', h('b', 'Dein Zug: '), moveLine(pos.slice(base + 1), tailIdx, i => goTo(base + 1 + i))));
-    const pick = i => { if (!engineTail) setLine(engineUcis(), true); goTo(base + 1 + i); };
-    kids.push(h('div', h('b', 'Engine-Linie: '), moveLine(lineFrom(puzzle.fen, engineUcis()), engineTail ? tailIdx : -1, pick)));
+    if (!engineTail && sol[base + 1]) kids.push(h('div', h('b', 'Dein Zug: '), moveLine(sol.slice(base + 1), tailIdx, pickSol)));
+    const pickEngine = i => { if (!engineTail) setLine(engineUcis(), true); else restoreSolution(); goTo(base + 1 + i); };
+    const engLine = engineTail ? sol.slice(base + 1) : lineFrom(puzzle.fen, engineUcis());
+    kids.push(h('div', h('b', 'Engine-Linie: '), moveLine(engLine, engineTail ? tailIdx : -1, pickEngine)));
+    if (explore) {
+      const fromSt = pos[explore.from];
+      kids.push(h('div', { style: { marginTop: '6px' } }, h('b', 'Eigene Variante'),
+        h('span.muted', fromSt.san ? ` (nach ${moveNo(fromSt.fenBefore)} ${fromSt.san})` : ' (ab Startstellung)'), h('b', ': '),
+        moveLine(pos.slice(explore.from + 1), inExplore() && !showPlayed ? cur - explore.from - 1 : -1, i => goTo(explore.from + 1 + i))));
+    }
+    plus5Btn.disabled = ext.busy || !canExtend(pos[pos.length - 1].fen);
+    kids.push(h('div.row', { style: { marginTop: '8px', gap: '8px' } }, plus5Btn,
+      explore ? h('button.btn.small', { onclick: backToSolution }, '↺ Zurück zur Lösung') : null,
+      h('span.muted', 'Tipp: Du kannst jetzt selbst Züge ausprobieren.')));
     if (P_tip()) kids.push(h('div', { style: { marginTop: '6px' } }, '💡 ', P_tip()));
     solBox.replaceChildren(...kids);
     playedBtn.textContent = showPlayed ? 'Lösung zeigen' : 'Partiezug zeigen';
@@ -183,6 +267,9 @@ export async function render(root, [filterKey = 'all']) {
 
   const playedBtn = h('button.btn', { onclick: () => {
     clearTimers();
+    ext.cancel();
+    // der Partiezug zweigt von der Aufgabenstellung ab – eine Variante davor wird verworfen
+    if (explore && explore.from < base) restoreSolution();
     showPlayed = !showPlayed;
     // der Partiezug zweigt von der Aufgabenstellung ab: ◀ geht von dort zurück, ▶ in die Lösung
     cur = showPlayed ? base : Math.min(base + 1, pos.length - 1);
@@ -205,7 +292,20 @@ export async function render(root, [filterKey = 'all']) {
     if (!checking) goTo(base);
   }
 
-  async function onUserMove(uci, chess) {
+  /** Nach dem Lösen: eigener Zug → Variante ab der aktuellen Stellung (ohne Einfluss auf die Bewertung) */
+  function exploreMove(uci, chess, mv) {
+    ext.cancel();
+    clearTimers();
+    if (showPlayed) return render();
+    if (pos[cur + 1]?.uci === uci) return goTo(cur + 1); // gleicher Zug wie in der Linie → einfach weiter
+    if (!explore || cur < explore.from) explore = { from: cur };
+    pos = pos.slice(0, cur + 1).concat({ fen: chess.fen(), san: mv.san, lastMove: [mv.from, mv.to], fenBefore: mv.before, uci });
+    cur = pos.length - 1;
+    render();
+  }
+
+  async function onUserMove(uci, chess, mv) {
+    if (puzzle && solved) return exploreMove(uci, chess, mv);
     if (!puzzle || solved || checking || cur !== base) return;
     const my = seq;
     let ok = uci === puzzle.best;
@@ -269,8 +369,8 @@ export async function render(root, [filterKey = 'all']) {
     h('h1', 'Training aus deinen Fehlern'),
     h('div.card', { style: { padding: '14px 18px' } }, chips, h('div', { style: { marginTop: '8px' } }, stats)),
     h('div.train',
-      h('div', boardEl, h('div', { style: { marginTop: '8px' } }, nav.el), h('div.navinfo', posInfo, backHint)),
+      h('div', h('div.boardwrap', bar.el, boardEl), evalInfo, h('div', { style: { marginTop: '8px' } }, nav.el), h('div.navinfo', posInfo, backHint)),
       h('div.side', prompt, h('div.card', info), actions))));
   load();
-  return () => { seq++; clearTimers(); unbindKeys(); board.destroy(); };
+  return () => { seq++; clearTimers(); ext.cancel(); stopAnalysis(); unbindKeys(); board.destroy(); };
 }

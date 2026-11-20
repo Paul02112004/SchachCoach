@@ -114,7 +114,40 @@ export function navBar(acts, ...extra) {
   const mk = (sym, title, fn) => h('button.btn', { onclick: fn, title, 'aria-label': title }, sym);
   const b = { first: mk('⏮', acts.firstTitle || 'Anfang (Pos1)', acts.first), prev: mk('◀', 'Zurück (←)', acts.prev),
     next: mk('▶', 'Vor (→)', acts.next), last: mk('⏭', acts.lastTitle || 'Ende (Ende)', acts.last) };
-  return { el: h('div.navbtns', b.first, b.prev, b.next, b.last, ...extra), set(en) { for (const k in b) b[k].disabled = !en[k]; } };
+  return { el: h('div.navbtns', b.first, b.prev, b.next, b.last, ...extra),
+    set(en) { for (const k in b) b[k].disabled = !en[k]; },
+    /** Ladezustand eines Knopfs (z.B. ▶, während die Engine den nächsten Zug rechnet) */
+    busy(k, on) { b[k].classList.toggle('loading', !!on); b[k].setAttribute('aria-busy', on ? 'true' : 'false'); } };
+}
+
+/**
+ * Bewertungsbalken (Sicht Weiß) links neben dem Brett.
+ * evalBar(orientation) → { el, set(ev), orient('white'|'black'), flip(), neutral() }
+ * neutral(): grau ohne Zahl (z.B. im Training, solange die Aufgabe nicht gelöst ist)
+ */
+export function evalBar(orientation = 'white') {
+  const fill = h('div.white'), num = h('div.num');
+  const el = h('div.evalbar', fill, num);
+  let orient = orientation, last = null;
+  const api = {
+    el,
+    set(ev) {
+      last = ev;
+      el.classList.remove('neutral');
+      el.classList.toggle('flipped', orient === 'black');
+      const wp = winPct(ev);
+      fill.style.height = wp + '%';
+      num.textContent = formatEval(ev).replace('+', '');
+      const whiteBetter = wp >= 50;
+      const atBottom = (orient === 'white') === whiteBetter; // Zahl auf der Seite des Besseren
+      Object.assign(num.style, atBottom ? { bottom: '4px', top: '' } : { top: '4px', bottom: '' });
+      num.style.color = whiteBetter ? '#222' : '#eee';
+    },
+    orient(o) { orient = o; el.classList.toggle('flipped', o === 'black'); if (last) api.set(last); },
+    flip() { api.orient(orient === 'white' ? 'black' : 'white'); },
+    neutral() { last = null; el.classList.add('neutral'); fill.style.height = '50%'; num.textContent = ''; },
+  };
+  return api;
 }
 
 /** Tastatur: ← → zurück/vor, Pos1/↑ Anfang, Ende/↓ Ende (+ extra: { taste: fn }). Gibt die Aufräumfunktion zurück. */

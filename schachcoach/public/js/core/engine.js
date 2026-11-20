@@ -106,29 +106,45 @@ class Pool {
     if (signal?.aborted) throw new DOMException('Abgebrochen', 'AbortError');
     return out;
   }
-  /** Live-Analyse einer Stellung (eigener Worker); gibt stop-Funktion zurück */
-  liveAnalyse(fen, onInfo, depth = 20) {
+  /**
+   * Exklusiver Zugriff auf den Live-Worker: Aufträge laufen nacheinander.
+   * Eine laufende Live-Analyse wird für neue Aufträge abgebrochen, Einzelbewertungen (quick) laufen zu Ende.
+   */
+  _live(job, fn) {
     if (!this.live) this.live = new EngineWorker();
     const w = this.live;
+    if (w.busy && this.liveJob?.kind === 'live') w.stop();
+    const run = (this.liveLock || Promise.resolve()).then(async () => {
+      await w.ready;
+      if (job.stopped) return null;
+      this.liveJob = job;
+      return fn(w);
+    });
+    this.liveLock = run.catch(() => {});
+    return run;
+  }
+  /** Live-Analyse einer Stellung (eigener Worker); gibt stop-Funktion zurück */
+  liveAnalyse(fen, onInfo, depth = 20) {
     const term = terminalEval(fen);
     if (term) { onInfo(term, true); return () => {}; }
-    let stopped = false;
-    const start = async () => {
-      await w.ready;
-      if (w.busy) { w.stop(); await new Promise(r => { const t = setInterval(() => { if (!w.busy) { clearInterval(t); r(); } }, 10); }); }
-      if (stopped) return;
-      const r = await w.analyse(fen, { depth, multipv: 1, onInfo: x => { if (!stopped) onInfo(x, false); } });
-      if (!stopped) onInfo(r, true);
-    };
-    start();
-    return () => { stopped = true; if (w.busy) w.stop(); };
+    const job = { kind: 'live', stopped: false };
+    this._live(job, async w => {
+      const r = await w.analyse(fen, { depth, multipv: 1, onInfo: x => { if (!job.stopped) onInfo(x, false); } });
+      if (!job.stopped) onInfo(r, true);
+    });
+    return () => { job.stopped = true; if (this.liveJob === job && this.live.busy) this.live.stop(); };
   }
-  /** Schnelle Einzelbewertung (z.B. für Trainingsaufgaben) */
-  async quick(fen, depth = 12) {
-    if (!this.live) this.live = new EngineWorker();
-    const w = this.live; await w.ready;
-    if (w.busy) { w.stop(); await new Promise(r => { const t = setInterval(() => { if (!w.busy) { clearInterval(t); r(); } }, 10); }); }
-    return terminalEval(fen) || w.analyse(fen, { depth, multipv: 1 });
+  /** Schnelle Einzelbewertung (z.B. für Trainingsaufgaben); signal bricht die Rechnung ab (Ergebnis dann null) */
+  async quick(fen, depth = 12, { signal } = {}) {
+    const term = terminalEval(fen);
+    if (term) return term;
+    const job = { kind: 'quick', stopped: false };
+    const abort = () => { job.stopped = true; if (this.liveJob === job && this.live.busy) this.live.stop(); };
+    signal?.addEventListener('abort', abort, { once: true });
+    try {
+      const r = await this._live(job, w => w.analyse(fen, { depth, multipv: 1 }));
+      return job.stopped ? null : r;
+    } finally { signal?.removeEventListener('abort', abort); }
   }
 }
 

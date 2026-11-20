@@ -1,11 +1,12 @@
 // Einzelanalyse einer Partie
-import { h, toast, classBadge, boardBadgeSvg, evalGraph, fmtDateLong, navBar, bindNavKeys, moveLine, moveNo } from '../ui.js';
+import { h, toast, classBadge, boardBadgeSvg, evalGraph, fmtDateLong, navBar, bindNavKeys, moveLine, moveNo, evalBar } from '../ui.js';
 import { createBoard, arrow, uciToSan, pvToSan, lineFrom } from '../board.js';
 import { store } from '../core/store.js';
 import { analyzeGame, pending } from '../core/pipeline.js';
-import { CLASSES, CLASS_ORDER, BAD, winPct, formatEval, TIME_CLASSES } from '../core/analysis.js';
+import { CLASSES, CLASS_ORDER, BAD, formatEval, TIME_CLASSES } from '../core/analysis.js';
 import { engine } from '../core/engine.js';
 import { patternOfMove, PATTERNS } from '../core/patterns.js';
+import { lineExtender, canExtend } from '../extend.js';
 
 export async function render(root, [id, startPly]) {
   let game;
@@ -35,7 +36,7 @@ function view(root, g, startPly) {
   const orientation = g.userColor === 'b' ? 'black' : 'white';
 
   const boardEl = h('div.board');
-  const evalBar = h('div.evalbar' + (orientation === 'black' ? '.flipped' : ''), h('div.white'), h('div.num'));
+  const bar = evalBar(orientation);
   const topPlayer = h('div.player'), botPlayer = h('div.player');
   const explain = h('div.explain');
   const engineLine = h('div.engine-line');
@@ -43,7 +44,15 @@ function view(root, g, startPly) {
   const graphBox = h('div');
   const varBox = h('div');
 
+  // Am Ende einer Variante rechnet die Engine auf Wunsch weiter (▶ / → bzw. „+5 Züge“)
+  const ext = lineExtender({
+    onStep: step => { if (!variation) return; variation.line.push(step); variation.idx = variation.line.length - 1; update(); },
+    onBusy: b => { nav.busy('next', b); if (variation) renderVar(); },
+    onDone: () => update(),
+  });
+
   const board = createBoard(boardEl, { orientation, onMove: (uci, chess, mv) => {
+    ext.cancel();
     // eigener Zug = nächster Partiezug → einfach in der Partie weitergehen
     if (!variation && g.moves[ply]?.uci === uci) { go(ply + 1); return; }
     const step = { fen: chess.fen(), san: mv.san, lastMove: [mv.from, mv.to], fenBefore: mv.before, uci };
@@ -64,15 +73,25 @@ function view(root, g, startPly) {
     topPlayer.replaceChildren(...p(top)); botPlayer.replaceChildren(...p(top === 'w' ? 'b' : 'w'));
   }
 
-  function setEvalBar(ev) {
-    const wp = winPct(ev);
-    evalBar.firstChild.style.height = (orientation === 'black' ? 100 - wp : wp) + '%';
-    const num = evalBar.lastChild;
-    num.textContent = formatEval(ev).replace('+', '');
-    const whiteBetter = wp >= 50;
-    const atBottom = (orientation === 'white') === whiteBetter;
-    Object.assign(num.style, atBottom ? { bottom: '4px', top: '' } : { top: '4px', bottom: '' });
-    num.style.color = whiteBetter ? '#222' : '#eee';
+
+  /** Kasten mit der aktuellen Variante (Züge klickbar, langer Text bricht um) */
+  function renderVar() {
+    const baseMv = variation.base > 0 ? g.moves[variation.base - 1] : null;
+    const endFen = variation.line[variation.line.length - 1].fen;
+    varBox.replaceChildren(h('div.card',
+      h('div.row', h('b', variation.engine ? 'Engine-Linie' : 'Eigene Variante'),
+        h('span.small.muted', baseMv ? `nach ${moveNo(baseMv.fenBefore)} ${baseMv.san}` : 'ab Startstellung'), h('span.spacer'),
+        h('button.btn.small', { onclick: extend5, disabled: ext.busy || !canExtend(endFen), title: 'Die Engine rechnet 5 weitere Halbzüge (abbrechbar durch Navigieren)' }, '+5 Züge'),
+        h('button.btn.small', { onclick: () => go(variation.base) }, '↩ Zurück zur Partie')),
+      h('div', { style: { marginTop: '6px' } }, moveLine(variation.line, variation.idx, i => { ext.cancel(); variation.idx = i; update(); }))));
+  }
+
+  /** 5 Halbzüge ans Ende der Variante anhängen */
+  function extend5() {
+    if (!variation || ext.busy) return;
+    variation.idx = variation.line.length - 1;
+    ext.run(variation.line[variation.idx].fen, 5);
+    update();
   }
 
   function update() {
@@ -80,23 +99,23 @@ function view(root, g, startPly) {
     if (variation) {
       const st = variation.line[variation.idx];
       board.show(st.fen, { lastMove: st.lastMove, movable: 'both' });
-      const baseMv = variation.base > 0 ? g.moves[variation.base - 1] : null;
-      varBox.replaceChildren(h('div.card',
-        h('div.row', h('b', variation.engine ? 'Engine-Linie' : 'Eigene Variante'),
-          h('span.small.muted', baseMv ? `nach ${moveNo(baseMv.fenBefore)} ${baseMv.san}` : 'ab Startstellung'), h('span.spacer'),
-          h('button.btn.small', { onclick: () => go(variation.base) }, '↩ Zurück zur Partie')),
-        h('div', { style: { marginTop: '6px' } }, moveLine(variation.line, variation.idx, i => { variation.idx = i; update(); }))));
+      renderVar();
+      highlightMoves();
+      setNav();
+      if (ext.busy) { // die Engine rechnet gerade den nächsten Zug – Live-Analyse danach
+        explain.replaceChildren(h('span.muted', 'Engine rechnet den nächsten Zug …'));
+        engineLine.replaceChildren();
+        return;
+      }
       explain.replaceChildren(h('span.muted', 'Live-Engine rechnet …'));
       engineLine.replaceChildren();
       const fen = st.fen;
       stopLive = engine.liveAnalyse(fen, (r, final) => {
-        setEvalBar(r);
+        bar.set(r);
         board.shapes([arrow(r.best)].filter(Boolean));
         engineLine.replaceChildren(h('b', formatEval(r)), ` · Tiefe ${r.depth} · `, pvToSan(fen, r.pv || []));
         if (final) explain.replaceChildren(h('span', 'Engine: ', h('b', formatEval(r))));
       }, 18);
-      highlightMoves();
-      setNav();
       return;
     }
     varBox.replaceChildren();
@@ -109,7 +128,7 @@ function view(root, g, startPly) {
       if (evBefore?.best && evBefore.best !== m.uci && (BAD.has(m.cls) || m.cls === 'good')) shapes.push(arrow(evBefore.best, 'best'));
     }
     board.show(fen, { lastMove: m ? [m.from, m.to] : undefined, movable: 'both', shapes });
-    setEvalBar(g.evals[ply]);
+    bar.set(g.evals[ply]);
     // Erklärung
     if (m) {
       const c = CLASSES[m.cls];
@@ -144,23 +163,32 @@ function view(root, g, startPly) {
   // Navigation: in einer Variante zuerst innerhalb der Variante, sonst in der Partie
   const back = () => {
     if (!variation) return go(ply - 1);
+    ext.cancel();
     if (variation.idx > 0) { variation.idx--; update(); } else go(variation.base);
   };
   const fwd = () => {
     if (!variation) return go(ply + 1);
-    if (variation.idx < variation.line.length - 1) { variation.idx++; update(); }
+    if (ext.busy) return; // rechnet schon – kein zweiter Auftrag
+    if (variation.idx < variation.line.length - 1) { variation.idx++; update(); return; }
+    // am Ende der Variante: Engine rechnet den nächsten Zug
+    const fen = variation.line[variation.idx].fen;
+    if (canExtend(fen)) { ext.run(fen, 1); update(); }
   };
   const first = () => variation ? go(variation.base) : go(0);
   const last = () => {
     if (!variation) return go(n);
+    ext.cancel();
     variation.idx = variation.line.length - 1; update();
   };
+  const flip = () => { board.flip(); bar.flip(); };
   const nav = navBar({ first, prev: back, next: fwd, last, firstTitle: 'Anfang (Pos1) – in einer Variante: zurück zum Ausgangszug' },
-    h('button.btn', { onclick: () => board.flip(), title: 'Brett drehen (F)', 'aria-label': 'Brett drehen' }, '⇅'));
+    h('button.btn', { onclick: flip, title: 'Brett drehen (F)', 'aria-label': 'Brett drehen' }, '⇅'));
   function setNav() {
     const canBack = variation ? true : ply > 0;
-    const canFwd = variation ? variation.idx < variation.line.length - 1 : ply < n;
-    nav.set({ first: canBack, prev: canBack, next: canFwd, last: canFwd });
+    const atEnd = variation && variation.idx === variation.line.length - 1;
+    const canFwd = variation ? !atEnd || canExtend(variation.line[variation.idx].fen) : ply < n;
+    const canLast = variation ? !atEnd : ply < n;
+    nav.set({ first: canBack, prev: canBack, next: canFwd, last: canLast });
   }
 
   function highlightMoves() {
@@ -169,7 +197,7 @@ function view(root, g, startPly) {
     if (cur) { const top = cur.offsetTop - movesEl.offsetTop; if (top < movesEl.scrollTop || top > movesEl.scrollTop + movesEl.clientHeight - 30) movesEl.scrollTop = top - 100; }
   }
 
-  function go(i) { variation = null; ply = Math.max(0, Math.min(n, i)); update(); }
+  function go(i) { ext.cancel(); variation = null; ply = Math.max(0, Math.min(n, i)); update(); }
 
   // Zugliste
   for (let i = 0; i < n; i += 2) {
@@ -189,7 +217,7 @@ function view(root, g, startPly) {
     h('span', '⚪ ' + g.white.name), h('span.acc-box.w', s.accuracy.w ?? '–'), h('b', s.elo.w ?? '–'),
     h('span', '⚫ ' + g.black.name), h('span.acc-box.b', s.accuracy.b ?? '–'), h('b', s.elo.b ?? '–'));
 
-  const unbindKeys = bindNavKeys({ first, prev: back, next: fwd, last, extra: { f: () => board.flip() } });
+  const unbindKeys = bindNavKeys({ first, prev: back, next: fwd, last, extra: { f: flip } });
 
   const meta = [fmtDateLong(g.date), TIME_CLASSES[g.timeClass] || g.timeClass, g.result, g.opening?.name].filter(Boolean).join(' · ');
   root.append(h('div.wrap', { style: { maxWidth: '1280px' } },
@@ -198,7 +226,7 @@ function view(root, g, startPly) {
       h('button.btn.small', { onclick: async () => { if (!confirm('Analyse löschen?')) return; await store.deleteGame(g.id); window.dispatchEvent(new CustomEvent('games-changed')); location.hash = '#/games'; } }, 'Löschen')),
     h('p.muted', { style: { marginTop: '-6px' } }, meta, ` · Tiefe ${g.depth}`),
     h('div.analysis',
-      h('div', topPlayer, h('div.boardwrap', evalBar, boardEl), botPlayer,
+      h('div', topPlayer, h('div.boardwrap', bar.el, boardEl), botPlayer,
         h('div', { style: { marginTop: '8px' } }, nav.el)),
       h('div.side',
         h('div.card', explain, h('div', { style: { marginTop: '8px' } }, engineLine)),
@@ -210,5 +238,5 @@ function view(root, g, startPly) {
   ));
   players();
   go(startPly != null && !isNaN(startPly) ? startPly : 0);
-  return () => { unbindKeys(); stopLive?.(); board.destroy(); };
+  return () => { ext.cancel(); unbindKeys(); stopLive?.(); board.destroy(); };
 }
