@@ -1,6 +1,6 @@
 // Einzelanalyse einer Partie
-import { h, toast, classBadge, boardBadgeSvg, evalGraph, fmtDateLong } from '../ui.js';
-import { createBoard, arrow, uciToSan, pvToSan } from '../board.js';
+import { h, toast, classBadge, boardBadgeSvg, evalGraph, fmtDateLong, navBar, bindNavKeys, moveLine, moveNo } from '../ui.js';
+import { createBoard, arrow, uciToSan, pvToSan, lineFrom } from '../board.js';
 import { store } from '../core/store.js';
 import { analyzeGame, pending } from '../core/pipeline.js';
 import { CLASSES, CLASS_ORDER, BAD, winPct, formatEval, TIME_CLASSES } from '../core/analysis.js';
@@ -29,7 +29,8 @@ export async function render(root, [id, startPly]) {
 function view(root, g, startPly) {
   const n = g.moves.length;
   let ply = n;            // 0 = Startstellung, i = nach Zug i
-  let variation = null;   // { fen, moves:[san], base } bei eigenen Zügen
+  // Variante: { base: Partie-Ply, an dem sie abzweigt, line: [{ fen, san, lastMove, fenBefore, uci }], idx: aktueller Zug, engine: Engine-Linie? }
+  let variation = null;
   let stopLive = null;
   const orientation = g.userColor === 'b' ? 'black' : 'white';
 
@@ -43,10 +44,16 @@ function view(root, g, startPly) {
   const varBox = h('div');
 
   const board = createBoard(boardEl, { orientation, onMove: (uci, chess, mv) => {
-    const baseFen = variation ? variation.fen : fenAt(ply);
-    variation = { fen: chess.fen(), moves: [...(variation?.moves || []), mv.san], base: variation?.base ?? ply, last: [mv.from, mv.to] };
+    // eigener Zug = nächster Partiezug → einfach in der Partie weitergehen
+    if (!variation && g.moves[ply]?.uci === uci) { go(ply + 1); return; }
+    const step = { fen: chess.fen(), san: mv.san, lastMove: [mv.from, mv.to], fenBefore: mv.before, uci };
+    if (variation) {
+      // an früherer Stelle abgezweigt → Rest der Variante abschneiden
+      variation.line = variation.line.slice(0, variation.idx + 1).concat(step);
+      variation.idx = variation.line.length - 1;
+      variation.engine = false;
+    } else variation = { base: ply, line: [step], idx: 0, engine: false };
     update();
-    void baseFen;
   } });
 
   const fenAt = i => i === 0 ? g.moves[0]?.fenBefore || g.evals[0]?.fen || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' : g.moves[i - 1].fenAfter;
@@ -71,12 +78,17 @@ function view(root, g, startPly) {
   function update() {
     stopLive?.(); stopLive = null;
     if (variation) {
-      board.show(variation.fen, { lastMove: variation.last, movable: 'both' });
-      varBox.replaceChildren(h('div.card', h('div.row', h('b', 'Eigene Variante: '), h('span.mono', variation.moves.join(' ')), h('span.spacer'),
-        h('button.btn.small', { onclick: () => { variation = null; update(); } }, '↩ Zurück zur Partie'))));
+      const st = variation.line[variation.idx];
+      board.show(st.fen, { lastMove: st.lastMove, movable: 'both' });
+      const baseMv = variation.base > 0 ? g.moves[variation.base - 1] : null;
+      varBox.replaceChildren(h('div.card',
+        h('div.row', h('b', variation.engine ? 'Engine-Linie' : 'Eigene Variante'),
+          h('span.small.muted', baseMv ? `nach ${moveNo(baseMv.fenBefore)} ${baseMv.san}` : 'ab Startstellung'), h('span.spacer'),
+          h('button.btn.small', { onclick: () => go(variation.base) }, '↩ Zurück zur Partie')),
+        h('div', { style: { marginTop: '6px' } }, moveLine(variation.line, variation.idx, i => { variation.idx = i; update(); }))));
       explain.replaceChildren(h('span.muted', 'Live-Engine rechnet …'));
       engineLine.replaceChildren();
-      const fen = variation.fen;
+      const fen = st.fen;
       stopLive = engine.liveAnalyse(fen, (r, final) => {
         setEvalBar(r);
         board.shapes([arrow(r.best)].filter(Boolean));
@@ -84,6 +96,7 @@ function view(root, g, startPly) {
         if (final) explain.replaceChildren(h('span', 'Engine: ', h('b', formatEval(r))));
       }, 18);
       highlightMoves();
+      setNav();
       return;
     }
     varBox.replaceChildren();
@@ -113,9 +126,41 @@ function view(root, g, startPly) {
       }
     } else explain.replaceChildren(h('span.muted', 'Startstellung – mit → oder Klick auf einen Zug durchgehen. Du kannst auch selbst Züge auf dem Brett ausprobieren.'));
     const ev = g.evals[ply];
-    engineLine.replaceChildren(...(ev?.pv?.length ? [h('b', 'Beste Linie: '), pvToSan(fen, ev.pv)] : []));
+    engineLine.replaceChildren(...(ev?.pv?.length ? [h('b', 'Beste Linie: '), pvToSan(fen, ev.pv), ' ',
+      h('button.btn.small', { onclick: () => playLine(fen, ev.pv), title: 'Engine-Linie als Variante Zug für Zug durchgehen' }, '▶ durchspielen')] : []));
     graphBox.replaceChildren(evalGraph(g.evals, g.moves, ply, i => go(i)));
     highlightMoves();
+    setNav();
+  }
+
+  /** Engine-Linie ab fen als Variante öffnen */
+  function playLine(fen, pv) {
+    const line = lineFrom(fen, pv);
+    if (!line.length) return;
+    variation = { base: ply, line, idx: 0, engine: true };
+    update();
+  }
+
+  // Navigation: in einer Variante zuerst innerhalb der Variante, sonst in der Partie
+  const back = () => {
+    if (!variation) return go(ply - 1);
+    if (variation.idx > 0) { variation.idx--; update(); } else go(variation.base);
+  };
+  const fwd = () => {
+    if (!variation) return go(ply + 1);
+    if (variation.idx < variation.line.length - 1) { variation.idx++; update(); }
+  };
+  const first = () => variation ? go(variation.base) : go(0);
+  const last = () => {
+    if (!variation) return go(n);
+    variation.idx = variation.line.length - 1; update();
+  };
+  const nav = navBar({ first, prev: back, next: fwd, last, firstTitle: 'Anfang (Pos1) – in einer Variante: zurück zum Ausgangszug' },
+    h('button.btn', { onclick: () => board.flip(), title: 'Brett drehen (F)', 'aria-label': 'Brett drehen' }, '⇅'));
+  function setNav() {
+    const canBack = variation ? true : ply > 0;
+    const canFwd = variation ? variation.idx < variation.line.length - 1 : ply < n;
+    nav.set({ first: canBack, prev: canBack, next: canFwd, last: canFwd });
   }
 
   function highlightMoves() {
@@ -144,17 +189,7 @@ function view(root, g, startPly) {
     h('span', '⚪ ' + g.white.name), h('span.acc-box.w', s.accuracy.w ?? '–'), h('b', s.elo.w ?? '–'),
     h('span', '⚫ ' + g.black.name), h('span.acc-box.b', s.accuracy.b ?? '–'), h('b', s.elo.b ?? '–'));
 
-  const keys = e => {
-    if (e.target.tagName === 'INPUT') return;
-    if (e.key === 'ArrowLeft') { variation ? (variation = null, update()) : go(ply - 1); }
-    else if (e.key === 'ArrowRight') go(ply + 1);
-    else if (e.key === 'ArrowUp' || e.key === 'Home') go(0);
-    else if (e.key === 'ArrowDown' || e.key === 'End') go(n);
-    else if (e.key === 'f') board.flip();
-    else return;
-    e.preventDefault();
-  };
-  document.addEventListener('keydown', keys);
+  const unbindKeys = bindNavKeys({ first, prev: back, next: fwd, last, extra: { f: () => board.flip() } });
 
   const meta = [fmtDateLong(g.date), TIME_CLASSES[g.timeClass] || g.timeClass, g.result, g.opening?.name].filter(Boolean).join(' · ');
   root.append(h('div.wrap', { style: { maxWidth: '1280px' } },
@@ -164,10 +199,7 @@ function view(root, g, startPly) {
     h('p.muted', { style: { marginTop: '-6px' } }, meta, ` · Tiefe ${g.depth}`),
     h('div.analysis',
       h('div', topPlayer, h('div.boardwrap', evalBar, boardEl), botPlayer,
-        h('div.navbtns', { style: { marginTop: '8px' } },
-          h('button.btn', { onclick: () => go(0), title: 'Anfang' }, '⏮'), h('button.btn', { onclick: () => variation ? (variation = null, update()) : go(ply - 1), title: 'Zurück' }, '◀'),
-          h('button.btn', { onclick: () => go(ply + 1), title: 'Vor' }, '▶'), h('button.btn', { onclick: () => go(n), title: 'Ende' }, '⏭'),
-          h('button.btn', { onclick: () => board.flip(), title: 'Brett drehen' }, '⇅'))),
+        h('div', { style: { marginTop: '8px' } }, nav.el)),
       h('div.side',
         h('div.card', explain, h('div', { style: { marginTop: '8px' } }, engineLine)),
         varBox,
@@ -178,5 +210,5 @@ function view(root, g, startPly) {
   ));
   players();
   go(startPly != null && !isNaN(startPly) ? startPly : 0);
-  return () => { document.removeEventListener('keydown', keys); stopLive?.(); board.destroy(); };
+  return () => { unbindKeys(); stopLive?.(); board.destroy(); };
 }

@@ -82,7 +82,13 @@ cg-container svg.cg-custom-svgs { overflow: visible; }
 .moves .mv { padding: 5px 6px; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
 .moves .mv:hover { background: #333; } .moves .mv.cur { background: #4a4030; outline: 1px solid var(--accent); }
 .evalgraph { width: 100%; height: 90px; border-radius: 10px; cursor: pointer; display: block; }
-.navbtns { display: flex; gap: 6px; } .navbtns .btn { flex: 1; font-size: 18px; padding: 6px; }
+.navbtns { display: flex; gap: 6px; } .navbtns .btn { flex: 1; font-size: 18px; padding: 6px; min-height: 44px; touch-action: manipulation; }
+.navinfo { display: flex; gap: 6px 10px; align-items: baseline; flex-wrap: wrap; margin-top: 8px; font-size: 14px; color: var(--muted); min-height: 20px; }
+.navinfo b { color: var(--text); }
+.navhint { color: var(--accent); font-weight: 600; }
+.pvline { line-height: 2; }
+.pvline .pm { cursor: pointer; padding: 3px 6px; border-radius: 6px; font-weight: 600; color: var(--text); }
+.pvline .pm:hover { background: #333; } .pvline .pm.cur { background: #4a4030; outline: 1px solid var(--accent); }
 .explain { display: flex; gap: 10px; align-items: center; font-size: 15px; min-height: 30px; }
 .explain b { font-weight: 700; }
 .acc-row { display: grid; grid-template-columns: 1fr auto auto; gap: 4px 14px; align-items: center; font-size: 14px; }

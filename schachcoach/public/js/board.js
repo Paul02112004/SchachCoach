@@ -94,3 +94,15 @@ export function pvToSan(fen, pv, max = 8) {
   }
   return out.join(' ');
 }
+
+/** Züge (UCI) ab fen nacheinander ausführen → [{ uci, san, lastMove, fenBefore, fen }]; bricht beim ersten illegalen Zug ab */
+export function lineFrom(fen, ucis = []) {
+  const c = new Chess(fen), out = [];
+  for (const u of ucis) {
+    const fenBefore = c.fen();
+    let mv;
+    try { mv = c.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] }); } catch { break; }
+    out.push({ uci: u, san: mv.san, lastMove: [mv.from, mv.to], fenBefore, fen: c.fen() });
+  }
+  return out;
+}

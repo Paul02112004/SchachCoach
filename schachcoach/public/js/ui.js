@@ -105,3 +105,38 @@ const ICONS = {
 
 export function fmtEta(s) { if (s < 90) return Math.max(1, Math.round(s)) + ' s'; if (s < 5400) return Math.round(s / 60) + ' min'; const hh = Math.floor(s / 3600); return `${hh} h ${Math.round((s - hh * 3600) / 60)} min`; }
 export const fmtAgo = ms => { const s = (Date.now() - ms) / 1000; if (s < 60) return 'gerade eben'; if (s < 3600) return `vor ${Math.round(s / 60)} min`; if (s < 86400) return `vor ${Math.round(s / 3600)} h`; return fmtDate(ms); };
+
+/** Zugnummer für einen Zug aus Stellung fenBefore: „12.“ (Weiß) bzw. „12…“ (Schwarz) */
+export const moveNo = fenBefore => { const p = fenBefore.split(' '); return p[5] + (p[1] === 'w' ? '.' : '…'); };
+
+/** Navigationsleiste ⏮ ◀ ▶ ⏭ (+ weitere Knöpfe); set({ first, prev, next, last }) schaltet die Knöpfe an/aus */
+export function navBar(acts, ...extra) {
+  const mk = (sym, title, fn) => h('button.btn', { onclick: fn, title, 'aria-label': title }, sym);
+  const b = { first: mk('⏮', acts.firstTitle || 'Anfang (Pos1)', acts.first), prev: mk('◀', 'Zurück (←)', acts.prev),
+    next: mk('▶', 'Vor (→)', acts.next), last: mk('⏭', acts.lastTitle || 'Ende (Ende)', acts.last) };
+  return { el: h('div.navbtns', b.first, b.prev, b.next, b.last, ...extra), set(en) { for (const k in b) b[k].disabled = !en[k]; } };
+}
+
+/** Tastatur: ← → zurück/vor, Pos1/↑ Anfang, Ende/↓ Ende (+ extra: { taste: fn }). Gibt die Aufräumfunktion zurück. */
+export function bindNavKeys({ first, prev, next, last, extra = {} }) {
+  const fn = e => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    const a = { ArrowLeft: prev, ArrowRight: next, ArrowUp: first, Home: first, ArrowDown: last, End: last, ...extra }[e.key];
+    if (!a) return;
+    e.preventDefault();
+    a();
+  };
+  document.addEventListener('keydown', fn);
+  return () => document.removeEventListener('keydown', fn);
+}
+
+/** Klickbare Zugfolge; items: [{ san, fenBefore }], cur = Index des aktuellen Zugs (−1 = keiner) */
+export function moveLine(items, cur, onPick) {
+  return h('span.pvline', items.map((m, i) => {
+    const white = m.fenBefore.split(' ')[1] === 'w';
+    return [white || i === 0 ? h('span.muted', moveNo(m.fenBefore) + ' ') : null,
+      h('span.pm' + (i === cur ? '.cur' : ''), { onclick: () => onPick(i) }, m.san), ' '];
+  }));
+}
